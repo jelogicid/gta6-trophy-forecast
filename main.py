@@ -6,9 +6,9 @@ Python 3.13+, standard library only, no network, deterministic.
 
 Model: per-trophy logit-space damped trend fit (weighted least squares,
 recency-weighted), blended toward the last observation, widened by an
-empirical step-volatility / residual floor, nudged down while the tracked
-player population is small, then mapped back through the logistic to five
-quantiles (5/25/50/75/95%).
+empirical step-volatility / residual floor, rarity-dependent rate-space
+dilution while the tracked player population is small, then mapped back
+through the logistic to five quantiles (5/25/50/75/95%).
 """
 from __future__ import annotations
 
@@ -120,10 +120,10 @@ def forecast_trophy(
 ) -> list:
     """Five quantiles (percent) for one trophy at the target time."""
     if not series:
-        # No observed rates at all: floor rarity, tight horizon widening
-        # (0.12 matches the flat-branch floor; unobserved != unpredictable).
+        # No observed rates at all: floor rarity, horizon widening matched
+        # to the flat-branch floor (0.3).
         m = logit(0.01)
-        spread = 0.12 * math.sqrt(horizon_days)
+        spread = 0.3 * math.sqrt(horizon_days)
         return [round4(inv_logit(m + z * spread)) for z in Z_LEVELS]
 
     xs = [math.log1p(max(h, 0.0)) for h, _ in series]
@@ -143,20 +143,25 @@ def forecast_trophy(
         sigma = max(sigma_step, resid_std, 0.08)
     else:
         m = last_logit
-        # Flat launch-night history moves by predictable dilution, not noise:
-        # floor 0.12 (was 0.5) keeps the 90-minute spread at 0.03 logit.
-        sigma = max(sigma_step, 0.12)
+        # Flat launch-night history: the dilution move is predictable but its
+        # timing is not. Floor 0.3 targets ~0.9 coverage (practice: 0.12 gave
+        # coverage_90 0.218, 0.5 gave 0.818).
+        sigma = max(sigma_step, 0.3)
 
-    # Dilution: a small early tracked population inflates rare rates; they
-    # fall as more casual players sync. Coefficient 0.52 calibrated to the
-    # observed refresh (638 -> ~3868 players, ~-1.80 logit on rare rates):
-    # -0.52*ln(20000/638) = -1.79. Floor -2.5 and the <8000 gate unchanged.
+    # Rarity-dependent dilution in RATE space, not a flat logit shift: on an
+    # upward population refresh, rare trophies keep a roughly fixed earner
+    # count while the denominator grows (rate -> rate/g), but common trophies
+    # (>=30%, casuals earn them too) barely fall. k interpolates between the
+    # two: rate_next = rate * (1/g + (1 - 1/g) * k). Mature populations
+    # (p_last >= 8000) are untouched.
     if players_series:
         p_last = players_series[-1]
         if p_last < 8000:
-            nudge = -0.52 * math.log(20000.0 / max(p_last, 1))
-            nudge = max(nudge, -2.5)
-            m += nudge
+            r0 = inv_logit(m)                       # current predicted percent
+            g = min(20000.0 / max(p_last, 1), 8.0)  # expected growth, cap 8x
+            k = min(1.0, r0 / 30.0)                 # casuals fully earn >=30%
+            r_pred = r0 * (1.0 / g + (1.0 - 1.0 / g) * k)
+            m = logit(r_pred)
 
     spread = min(sigma * math.sqrt(horizon_days), 3.0)
     return [round4(inv_logit(m + z * spread)) for z in Z_LEVELS]
