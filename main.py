@@ -120,9 +120,10 @@ def forecast_trophy(
 ) -> list:
     """Five quantiles (percent) for one trophy at the target time."""
     if not series:
-        # No observed rates at all: floor rarity, modest horizon widening.
+        # No observed rates at all: floor rarity, tight horizon widening
+        # (0.12 matches the flat-branch floor; unobserved != unpredictable).
         m = logit(0.01)
-        spread = 0.5 * math.sqrt(horizon_days)
+        spread = 0.12 * math.sqrt(horizon_days)
         return [round4(inv_logit(m + z * spread)) for z in Z_LEVELS]
 
     xs = [math.log1p(max(h, 0.0)) for h, _ in series]
@@ -142,14 +143,18 @@ def forecast_trophy(
         sigma = max(sigma_step, resid_std, 0.08)
     else:
         m = last_logit
-        sigma = max(sigma_step, 0.5)
+        # Flat launch-night history moves by predictable dilution, not noise:
+        # floor 0.12 (was 0.5) keeps the 90-minute spread at 0.03 logit.
+        sigma = max(sigma_step, 0.12)
 
-    # Dilution: a small early tracked population inflates rare rates;
-    # they fall as more casual players sync their trophies.
+    # Dilution: a small early tracked population inflates rare rates; they
+    # fall as more casual players sync. Coefficient 0.52 calibrated to the
+    # observed refresh (638 -> ~3868 players, ~-1.80 logit on rare rates):
+    # -0.52*ln(20000/638) = -1.79. Floor -2.5 and the <8000 gate unchanged.
     if players_series:
         p_last = players_series[-1]
         if p_last < 8000:
-            nudge = -0.5 * math.log(20000.0 / max(p_last, 1))
+            nudge = -0.52 * math.log(20000.0 / max(p_last, 1))
             nudge = max(nudge, -2.5)
             m += nudge
 
